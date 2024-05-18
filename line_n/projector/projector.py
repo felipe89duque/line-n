@@ -3,88 +3,108 @@ import numpy as np
 from line_n import Canvas
 
 
-class Projector:   
-   def __init__(self, canvas:Canvas,image:np.ndarray,transform=None,transform_kwargs=None):
-      self.canvas=canvas
-      #self.image = 2*(image.astype(float)/255 - 0.5)
-      self.image = image.astype(float)/255
-      self.stop = False
-      self.metric = -np.inf
-      self.steps=0
-      self.max_steps = 1000
-      self.metrics =[]
-      self.transform = transform
-      self.transform_kwargs = transform_kwargs
+class Projector:
+    def __init__(
+        self,
+        canvas: Canvas,
+        image: np.ndarray,
+        max_optimizer_steps,
+        transform=None,
+        transform_kwargs=None,
+    ):
+        self.canvas = canvas
 
-   @property
-   def pruned_base(self):
-      return [edge for edge in self.prune_edges()]
-      
-   @property
-   def max_projection(self):
-      return np.product(self.image.shape)
-   
+        self.image = self._setup_image(image)
+        self.transformer = self._setup_transformer(transform, transform_kwargs)
+        self.optimizer = self._setup_optimizer(max_optimizer_steps)
 
-   def get_spectrum(self,image):
-      dot = np.empty(len(self.canvas.base.keys()),dtype=float)
-      for edge_idx, _ in self.canvas.edge_map:
-         edge_img = self.canvas.edge2base(edge_idx)
-         dot[edge_idx] = np.sum(image*edge_img) 
-      return dot
+    def _setup_image(self, image: np.ndarray) -> np.ndarray:
+        if image.dtype == np.uint8:
+            print("Casting image to float, setting max value to 1.0")
+            return image.astype(float) / 255
+        elif image.dtype != float or image.max() > 1:
+            raise TypeError(
+                "Image must be type uint8 or float lower than or equal to 1.0"
+            )
+        return image
 
-   def project(self,image, transform,kwargs):
-      trans_input_img = transform(image,**kwargs)
-      trans_self_img = transform(self.image,**kwargs)
-      #plt.figure()
-      #plt.imshow(trans_input_img*trans_self_img)
-      #plt.colorbar()
-      return np.sum(trans_input_img*trans_self_img)
-      
-   def prune_edges(self):
-      new_img = self.image.copy()
-      spectrum = self.get_spectrum(self.image)
-      self.max_dots = []
-      max_dot = spectrum.argmax()
-      similarity = -np.inf
+    def _setup_transformer(self, transform, kwargs):
+        kwargs = kwargs or {}
 
-      #while (new_img.clip(min=0).sum() > self.image.sum()*self.energy_threshold) and (spectrum[max_dot] >0):
-      while not self.stop:
-         self.max_dots.append(max_dot)
-         yield max_dot
-         new_img -= self.canvas.edge2image(max_dot) * self.canvas.thread_alpha
+        def identity(x):
+            return x
 
-         spectrum = self.get_spectrum(new_img)
-         max_dot = spectrum.argmax()
-         self.optimiser_step()
+        def transformer(x):
+            return transform(x, **kwargs)
 
+        return identity if transform is None else transformer
 
-         #print(new_img.clip(min=0).sum(),self.image.sum(),self.image.sum()*self.energy_threshold,spectrum[max_dot])
+    def _setup_optimizer(self, max_steps):
+        return {
+            "stop": False,
+            "current_metric": -np.inf,
+            "steps": 0,
+            "max_steps": max_steps,
+            "metric_history": [],
+        }
 
-      return None
+    @property
+    def pruned_base(self):
+        return [edge for edge in self.prune_edges()]
 
-   def optimiser_step(self):
-      image = self.canvas.multiedge2image(*self.max_dots)
-      metric = self.project(image,self.transform,self.transform_kwargs)
-      self.metrics.append(metric)
-      metric_diff = metric - self.metric
-      self.metric = metric
-      if metric_diff <=0:
-         self.stop = True
-      
-      elif self.steps >= self.max_steps:
-         print("Max steps reached")
-         self.stop = True
+    def get_spectrum(self, image):
+        dot = np.empty(len(self.canvas.base.keys()), dtype=float)
+        for edge_idx in range(dot.size):
+            edge_img = self.canvas.edge2base(edge_idx)
+            dot[edge_idx] = np.sum(image * edge_img)
+        return dot
 
-      self.steps +=1
+    def project(self, image):
+        trans_input_img = transformer(image)
+        trans_self_img = transformer(self.image)
+        return np.sum(trans_input_img * trans_self_img)
 
-   
+    def prune_edges(self):
+        new_img = self.image.copy()
+        spectrum = self.get_spectrum(self.image)
+        self.best_edges = []
+        max_dot = spectrum.argmax()
 
-   def draw(self,ax=None,**kwargs):
-      ax = ax or plt.axes()
+        # while (new_img.clip(min=0).sum() > self.image.sum()*self.energy_threshold) and (spectrum[max_dot] >0):
+        while not self.stop:
+            self.best_edges.append(max_dot)
+            yield max_dot
+            new_img -= self.canvas.edges2image(max_dot) * self.canvas.thread.alpha
 
-      edges=self.prune_edges()
-      projection = np.zeros(self.canvas.size[[1,0]])
-      for edge in edges:
-         projection += self.canvas.edge2image(edge)*self.canvas.thread_alpha
-      projection= (projection.clip(max=1)*255//projection.max()).astype(np.uint8)
-      ax.imshow(projection,**kwargs)
+            spectrum = self.get_spectrum(new_img)
+            max_dot = spectrum.argmax()
+            self.optimiser_step()
+
+            # print(new_img.clip(min=0).sum(),self.image.sum(),self.image.sum()*self.energy_threshold,spectrum[max_dot])
+
+        return None
+
+    def optimiser_step(self):
+        image = self.canvas.edges2image(*self.best_edges)
+        metric = self.project(image)
+        self.optimizer["metric_history"].append(metric)
+        metric_diff = metric - self.optimizer["current_metric"]
+        self.optimizer["current_metric"] = metric
+        if metric_diff <= 0:
+            self.optimizer["stop"] = True
+
+        elif self.optimizer["steps"] >= self.optimizer["max_steps"]:
+            print("Max steps reached")
+            self.optimizer["stop"] = True
+
+        self.optimizer["steps"] += 1
+
+    def draw(self, ax=None, **kwargs):
+        ax = ax or plt.axes()
+
+        edges = self.prune_edges()
+        projection = np.zeros(self.canvas.size[[1, 0]])
+        for edge in edges:
+            projection += self.canvas.edges2image(edge) * self.canvas.thread.alpha
+        projection = (projection.clip(max=1) * 255 // projection.max()).astype(np.uint8)
+        ax.imshow(projection, **kwargs)

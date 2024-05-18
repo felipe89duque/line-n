@@ -1,111 +1,88 @@
 from itertools import combinations
-from typing import Tuple
+from typing import Tuple, Iterable, Dict
 
 import numpy as np
 import matplotlib.pyplot as plt
 
+from line_n.canvas.frame import _Frame
+from line_n.canvas.thread import _Thread
+from line_n.canvas.utils import bresenham
+from line_n.exceptions.canvas_exceptions import ColorIncompatibilityError
+
+
 class Canvas:
-    def __init__(self, frame_pts:np.ndarray,thread_width:float,thread_sharpness:float=1,thread_alpha=0.25,si_units=1e-2):
-        self.frame_pts = frame_pts
-        self.thread_width = thread_width
-        self.thread_alpha=thread_alpha
-        self.thread_sharpness=thread_sharpness
-        self.tau = 1/thread_sharpness
+    def __init__(
+        self,
+        frame: _Frame,
+        thread: _Thread,
+        dark_background: bool,
+        si_units=1e-2,
+    ):
+        self.frame = frame
+        self.thread = thread
+        self.dark_background = dark_background
 
-        self.frame_px = (frame_pts/(thread_width*thread_sharpness)).astype(int)
-        self.base = self.base_edges()
+        self.frame_px = (frame.points / (thread.width)).astype(int)
+        self.base = self._get_base_edges()
+        self.background_color = self._set_colors()
 
     @property
-    def size(self):
-        return self.frame_px.max(axis=0).astype(int) +1
+    def size(self) -> Tuple[int, int]:
+        return self.frame_px.max(axis=0).astype(int) + 1
 
     @property
-    def edge_map(self):
-        return ((edge_idx, point_pair) for edge_idx, point_pair in enumerate(combinations(self.frame_px,2)))
+    def edge_map(self) -> Iterable[Tuple[int, Tuple]]:
+        return (
+            (edge_idx, point_pair)
+            for edge_idx, point_pair in enumerate(combinations(self.frame_px, 2))
+        )
 
-    def base_edges(self):
+    def _get_base_edges(self) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
         # [K, H, W]
         base = {}
-        for k,edge in self.edge_map:
-            (x,y) = self.get_edge(*edge)
-            base[k] = y,x
-        
+        for k, edge in self.edge_map:
+            (x, y) = self.get_edge(*edge)
+            base[k] = y, x
+
         return base
 
-    def get_edge(self,point1:Tuple[int,int],point2:Tuple[int,int]) -> Tuple[np.ndarray,np.ndarray]:
-        return self.bresenham(*point1,*point2)
-        #return self.line(*point1,*point2)
-        #return self.band(*point1,*point2)
+    def _set_colors(self) -> int:
+        if (self.dark_background and self.thread.color_name == "dark") or (
+            not self.dark_background and self.thread.color_name == "bright"
+        ):
+            raise ColorIncompatibilityError(
+                "Canvas background can't be the same color as the thread"
+            )
+        return int(not self.dark_background)
 
-    def edge2base(self,edge_idx):
-        y_vec,x_vec = self.base[edge_idx]
-        #image = -np.ones(self.size[[1,0]],dtype=float)
-        image = np.zeros(self.size[[1,0]],dtype=float)
-        image[y_vec,x_vec] = self.thread_alpha
-        return image
-
-    def edge2image(self,edge_idx:int) -> np.ndarray:
-        y_vec,x_vec = self.base[edge_idx]
-        image = np.zeros(self.size[[1,0]])
-        image[y_vec,x_vec] = self.thread_alpha
-        return image
-
-
-    @staticmethod
-    def bresenham(x0,y0,x1,y1):
-        dx = abs(x1 - x0)
-        sx = 1 if x0 < x1 else -1
-        dy = -abs(y1 - y0)
-        sy = 1 if y0 < y1 else -1
-        error = dx + dy
-        
-        x_vec = []
-        y_vec = []
-        while True:
-            x_vec.append(x0)
-            y_vec.append(y0)
-            if x0 == x1 and y0 == y1:
-                break
-            e2 = 2 * error
-            if e2 >= dy:
-                if x0 == x1:
-                    break
-                error = error + dy
-                x0 = x0 + sx
-            if e2 <= dx:
-                if y0 == y1: 
-                    break
-                error = error + dx
-                y0 = y0 + sy
-
-        return (np.array(x_vec,dtype=int),np.array(y_vec,dtype=int))
-
-    @staticmethod
-    def line(x0,y0,x1,y1):
-        dx = x1-x0
-        dy = y1-y0
-        num = abs(dx) + abs(dy)
-        y = np.round(np.linspace(y0,y1,num))
-        x = np.round(np.linspace(x0,x1,num))
-        points = np.unique(np.stack([x,y],axis=1),axis=0)
-        return (points[:,0].astype(int),points[:,1].astype(int))
-
-  
-    def plot(self,*edges,ax=None,**kwargs):
+    def plot(self, *edges: int, ax: plt.Axes = None, **kwargs) -> None:
+        cmap = "binary_r" if self.dark_background else "binary"
         if ax:
             plt.sca(ax)
-        xs = self.frame_px[:,0]
-        ys = self.frame_px[:,1]
-        plt.scatter(xs,ys,**kwargs)
-        
-        all_edges = self.multiedge2image(*edges)
-        plt.imshow(all_edges,cmap="binary",vmin=0,vmax=1)
-        plt.xticks(xs,xs*self.thread_width)
-        plt.yticks(ys,ys*self.thread_width)
+        xs = self.frame_px[:, 0]
+        ys = self.frame_px[:, 1]
+        plt.scatter(xs, ys, **kwargs)
+
+        all_edges = self.edges2image(*edges)
+        plt.imshow(all_edges, cmap=cmap, vmin=0, vmax=1)
+        plt.xticks(xs, xs * self.thread.width)
+        plt.yticks(ys, ys * self.thread.width)
         plt.gca().set_aspect("equal")
 
-    def multiedge2image(self,*edges):
+    def edges2image(self, *edges: int) -> np.ndarray:
+        def edge2image(edge_idx: int) -> np.ndarray:
+            y_vec, x_vec = self.base[edge_idx]
+            image = np.zeros(self.size[[1, 0]], dtype=float)
+            image[y_vec, x_vec] = self.thread.alpha
+            return image
+
         if len(edges) == 0:
-            return np.zeros(self.size[[1,0]])
-        
-        return np.sum([self.edge2image(edge) for edge in edges],axis=0).clip(min=0,max=1)
+            return np.zeros(self.size[[1, 0]])
+
+        return np.sum([edge2image(edge) for edge in edges], axis=0).clip(min=0, max=1)
+
+    @staticmethod
+    def get_edge(
+        point1: Tuple[int, int], point2: Tuple[int, int]
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        return bresenham(*point1, *point2)

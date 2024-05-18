@@ -7,10 +7,12 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.13"
+pip = "24.0"
 numpy = "1.26"
 scipy = "1.13"
 matplotlib = "3.8"
 ipykernel = "6.29"
+marshmallow = "3.21"
 
 
 [build-system]
