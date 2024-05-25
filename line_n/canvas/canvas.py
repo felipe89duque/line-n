@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 from line_n.canvas.frame import _Frame
 from line_n.canvas.thread import _Thread
-from line_n.canvas.utils import bresenham
+from line_n.canvas.utils import bresenham, get_color_brightness
 from line_n.exceptions.canvas_exceptions import ColorIncompatibilityError
 
 
@@ -15,12 +15,11 @@ class Canvas:
         self,
         frame: _Frame,
         thread: _Thread,
-        dark_background: bool,
         si_units=1e-2,
     ):
         self.frame = frame
         self.thread = thread
-        self.dark_background = dark_background
+        self.dark_background = get_color_brightness(self.thread.color) > 0.5
 
         self.frame_px = (frame.points / (thread.width)).astype(int)
         self.base = self._get_base_edges()
@@ -41,7 +40,8 @@ class Canvas:
         # [K, H, W]
         base = {}
         for k, edge in self.edge_map:
-            (x, y) = self.get_edge(*edge)
+            point1, point2 = edge
+            (x, y) = bresenham(*point1, *point2)
             base[k] = y, x
 
         return base
@@ -55,13 +55,24 @@ class Canvas:
             )
         return int(not self.dark_background)
 
-    def plot(self, *edges: int, ax: plt.Axes = None, **kwargs) -> None:
+    def plot(
+        self,
+        *edges: int,
+        show_frame: bool = True,
+        enumerate_frame: bool = True,
+        ax: plt.Axes = None,
+        **kwargs
+    ) -> None:
         cmap = "binary_r" if self.dark_background else "binary"
         if ax:
             plt.sca(ax)
         xs = self.frame_px[:, 0]
         ys = self.frame_px[:, 1]
-        plt.scatter(xs, ys, **kwargs)
+
+        if show_frame:
+            plt.scatter(xs, ys, **kwargs)
+            if enumerate_frame:
+                [plt.text(xs[i], ys[i], str(i)) for i in range(len(ys))]
 
         all_edges = self.edges2image(*edges)
         plt.imshow(all_edges, cmap=cmap, vmin=0, vmax=1)
@@ -80,9 +91,3 @@ class Canvas:
             return np.zeros(self.size[[1, 0]])
 
         return np.sum([edge2image(edge) for edge in edges], axis=0).clip(min=0, max=1)
-
-    @staticmethod
-    def get_edge(
-        point1: Tuple[int, int], point2: Tuple[int, int]
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        return bresenham(*point1, *point2)

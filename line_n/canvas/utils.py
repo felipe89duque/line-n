@@ -1,3 +1,5 @@
+from typing import Union, Tuple
+
 import numpy as np
 
 
@@ -38,3 +40,11 @@ def line(x0, y0, x1, y1):
     x = np.round(np.linspace(x0, x1, num))
     points = np.unique(np.stack([x, y], axis=1), axis=0)
     return (points[:, 0].astype(int), points[:, 1].astype(int))
+
+
+def get_color_brightness(color: Union[float, Tuple[float, float, float]]) -> float:
+    if isinstance(color, (float, int)):
+        return color
+
+    r, g, b = color
+    return (0.21 * r) + (0.72 * g) + (0.07 * b)
